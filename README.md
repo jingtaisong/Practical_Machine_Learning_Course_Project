@@ -1,2 +1,2 @@
-Practical_Machine_Learning_Course_Project
+Please see the project.rmd file and the generated html file in the gh-pages branch.
 =========================================
