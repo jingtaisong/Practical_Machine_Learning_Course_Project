@@ -1,0 +1,146 @@
+---
+title: 'Practical Machine Learning: Course Project'
+author: "Taisong Jing"
+date: "Friday, July 25, 2014"
+output: html_document
+---
+
+
+This is an R Markdown document for the course project of Practical Machine Learning class on Couresera. Please put the data "pml-training.csv" and "pml-testing.csv" available in the working directory; the files can be downloaded from <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv> and <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>. We use the R package *caret* in modelling and prediction.
+
+```{r}
+library(caret)
+library(ggplot2)
+training.raw<-read.csv("pml-training.csv",na.strings=c("","NA"))
+testing.raw<-read.csv("pml-testing.csv",na.strings=c("","NA"))   ## let the blank entries be filled with NA's
+```
+
+The data is about research in Human Activity Recognition (HAR). In this study, six healthy subjects are required to do one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Data are collected from accelerometers on the belt, forearm, arm, and dumbell. The goal of the project is to fit a model to predict the class of activities (named as "classe" in the data) from these data.
+
+Since this is a classification problem and the number of observations is relatively small (less than 20000), we fit the model by the random forest method, which uses bootstrapping to reduces the variation of prediction and improves the accuracy. Given the 159 features in the data, it is important to choose the correct features to fit the model.
+
+**Step 1: drop the features with too many missing values and those irrelevant features**
+
+We drop the features with a large proportion of missing values at the threshold = 0.5. We also drop the irrelevant features that describe the number of observations, the user name, and the time.
+
+```{r}
+N<-dim(training.raw)[1]
+col.drop<-which(colSums(is.na(training.raw))/N > 0.5|colnames(training.raw)=="X"|colnames(training.raw)=="user_name"|colnames(training.raw)=="cvtd_timestamp")
+training.rm<-training.raw[,-col.drop]   ## drop the features with too many NA's, the number of the observation, the user name, and the time
+testing.rm<-testing.raw[,-col.drop] ## drop the corresponding features for the testing data
+levels(training.rm$new_window)<-c(0,1)  ## rename the levels for the new_window variable to 0 (for "no") and 1 (for "yes")
+```
+
+**Step 2: drop the features with too high correlations to others and too low variances themselves**
+
+We use the findCorrelation() function in *caret* package to cut off the features with correlations higher to others (cutoff = 0.8) and the nearZeroVar() function to cut off features with too many repeated values (threshold for freqRatio = 10)
+
+```{r}
+training.rm.fea<-sapply(subset(training.rm,select=-classe), as.numeric)
+cor<-cor(training.rm.fea)
+high.cor.col<-findCorrelation(cor,cutoff=0.8)
+low.var.col<-which(nearZeroVar(training.rm.fea,saveMetrics=TRUE)$freqRatio>10)
+col.to.drop<-unique(c(high.cor.col, low.var.col))
+```
+
+**Step 3: principal component analysis**
+Due to the limit of computability on my laptop (Intel Core 2 Duo processor T5250(1.5GHz), 2G memory), the number of features needs to be reduced further to realize the computation in a reasonable amount of time. We pick the features by principal component analysis.
+
+Use the prcomp() function in *caret* package, we can obtain a matrix showing the principal components written as linear combinations of the features. We pick the feature "magnet_forearm_y", which has the largest weight in the first principal component.
+
+```{r}
+training.rm.fea.2<-training.rm.fea[,-col.to.drop]
+testing.rm.2<-testing.rm[,-col.to.drop]
+training.pca<-prcomp(training.rm.fea.2,scale.=TRUE,saveMetrics=TRUE)
+perc.training.pca<-apply(training.pca$rotation,MARGIN=2,FUN=function(x){which.max(abs(x))})
+```
+
+**Step 4: Exploratory Analysis**
+We plot the features with large weights in the principal components versus the feature "magnet\_forearm\_y", and color the scattered points according to their group in "classe". If the colors are separated better from each other, we consider the corresponding feature is a better candidate to fit the model.
+
+By this principal, we finally choose the six features "magnet\_forearm\_y", "total\_accel\_belt", "num\_window", "total\_accel\_forearm", "accel\_forearm\_z", and "magnet\_dumbbell\_z"to fit the model. Here are the colored scatter plots using the *ggplot2* package.
+
+```{r}
+qplot(training.rm.fea.2[,36],training.rm.fea.2[,34],col=training$classe)+labs(y="accel_forearm_z",x="magnet_forearm_y")
+
+qplot(training.rm.fea.2[,36],training.rm.fea.2[,29],col=training$classe)+labs(y="total_accel_forearm",x="magnet_forearm_y")
+
+qplot(training.rm.fea.2[,36],training.rm.fea.2[,3],col=training$classe)+labs(y="num_window",x="magnet_forearm_y")
+
+qplot(training.rm.fea.2[,36],training.rm.fea.2[,6],col=training$classe)+labs(y="total_accel_belt",x="magnet_forearm_y")
+
+qplot(training.rm.fea.2[,36],training.rm.fea.2[,28],col=training$classe)+labs(y="magnet_dumbbell_z",x="magnet_forearm_y")
+```
+
+**Step 5: Fit the model using random forest method and cross validation**
+
+We use the random forest method in train() function of *caret* package to fit the model. We split the training set into two parts for cross validation.
+
+```{r,eval=FALSE}
+col.to.use<-c(36,6,3,29,34,28)   ## these columns are the chosen features
+training<-cbind(training.rm.fea.2[,col.to.use],data.frame("classe"=training.raw$classe))
+testing<-testing.rm.2[,col.to.use]
+
+set.seed(2)
+inTrain<-createDataPartition(y=training$classe,p=0.8,list=FALSE)
+training.train<-training[inTrain,]
+training.test<-training[-inTrain,] ## split
+```
+Fit the model with the training.train data set, and test it with the training.test data set:
+
+```{r,eval=FALSE}
+set.seed(39896)
+modelFit<-train(classe~.,data=training.train,method="rf",preProcess=c("scale","pca"))
+
+training.pred<-predict(modelFit,newdata=training.test)
+confusionMatrix(training.pred,training.test$classe)
+
+Confusion Matrix and Statistics
+
+          Reference
+Prediction    A    B    C    D    E
+         A 1052   69   22   10    3
+         B   37  610   57   34   17
+         C   19   48  544   82   15
+         D    7   22   56  483   40
+         E    1   10    5   34  646
+
+Overall Statistics
+                                          
+               Accuracy : 0.8501          
+                 95% CI : (0.8386, 0.8611)
+    No Information Rate : 0.2845          
+    P-Value [Acc > NIR] : < 2e-16         
+                                          
+                  Kappa : 0.8101          
+ Mcnemars Test P-Value : 0.00265         
+
+Statistics by Class:
+
+                     Class: A Class: B Class: C Class: D Class: E
+Sensitivity            0.9427   0.8037   0.7953   0.7512   0.8960
+Specificity            0.9629   0.9542   0.9494   0.9619   0.9844
+Pos Pred Value         0.9100   0.8079   0.7684   0.7944   0.9282
+Neg Pred Value         0.9769   0.9530   0.9565   0.9517   0.9768
+Prevalence             0.2845   0.1935   0.1744   0.1639   0.1838
+Detection Rate         0.2682   0.1555   0.1387   0.1231   0.1647
+Detection Prevalence   0.2947   0.1925   0.1805   0.1550   0.1774
+Balanced Accuracy      0.9528   0.8789   0.8723   0.8565   0.9402
+```
+The accuracy is about 85%, with 95% confidence interval [83.86%,86.11%]. The model fitting process caused me for about an hour. In consideration of the limited computability on my laptop, this is an acceptable rate. After trying several other features, the current choice of features is the best I can get with affordable time cost.
+
+**Prediction on the pml-testing data set**
+Run the model on the pml-testing data set we get the predictions of the motion classes on the twenty observations.
+```{r,eval=FALSE}
+predict(modelFit,newdata=testing)
+ [1] B A B A A E D B A A B C B A E E A B B B
+Levels: A B C D E
+```
+We expect the error rate is between 13.89% and 16.14% according to the 95% confidence interval of the accuracy of the model; that is no more than 3 errors out of 20.
+
+**Reference**
+We thank the researchers to provide the data set:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: <http://groupware.les.inf.puc-rio.br/har#ixzz38dRvEfgx>
